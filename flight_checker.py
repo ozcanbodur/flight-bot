@@ -127,6 +127,8 @@ async def search_flights(origin: str, destination: str, depart_date: str,
             "/flights/searchFlights",
             params
         )
+        logger.info("Flight search raw response keys: %s", list(data.keys()) if isinstance(data, dict) else type(data))
+        logger.info("Flight search raw response preview: %s", str(data)[:2000])
 
         return {
             "raw": data,
