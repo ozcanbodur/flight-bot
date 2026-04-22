@@ -13,7 +13,7 @@ from telegram.ext import (
     filters,
 )
 
-from flight_checker import search_flights, format_price_message
+from flight_checker import search_flights, build_price_message
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -29,14 +29,14 @@ active_watches = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "✈️ Uçuş Fiyat Takip Botuna hoş geldiniz.\n\n"
-        "Seçtiğiniz rota için her saat başı fiyat kontrolü yaparım.\n\n"
+        "Seçtiğiniz rota için düzenli fiyat kontrolü yaparım.\n\n"
         "Komutlar:\n"
         "/watch - Yeni rota takibi başlat\n"
         "/list - Aktif takibi göster\n"
         "/check - Şimdi fiyat kontrol et\n"
         "/stop - Takibi durdur\n"
         "/cancel - Mevcut işlemi iptal et\n\n"
-        "Grup içinde de kullanılabilir. Takip hangi sohbette başlatıldıysa mesajlar oraya gider."
+        "Takipler 3 saatte bir kontrol edilir."
     )
     await update.message.reply_text(text)
 
@@ -175,7 +175,7 @@ async def get_stop_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📅 Dönüş: {ret}\n"
         f"👥 Yolcu: {cfg['passengers']}\n"
         f"🧭 Tercih: {pref_label}\n\n"
-        f"Her saat başı fiyat kontrol edilecek. Onaylıyor musunuz?"
+        f"Her 3 saatte bir fiyat kontrol edilecek. Onaylıyor musunuz?"
     )
 
     keyboard = [[
@@ -210,7 +210,7 @@ async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(
             f"✅ Takip başlatıldı.\n\n"
-            f"{cfg['origin']} → {cfg['destination']} rotası her saat başı kontrol edilecek.\n"
+            f"{cfg['origin']} → {cfg['destination']} rotası 3 saatte bir kontrol edilecek.\n"
             f"İlk kontrol şimdi yapılıyor..."
         )
 
@@ -282,8 +282,26 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
             stop_preference=cfg.get("stop_preference", "any"),
         )
 
-        msg = format_price_message(results, cfg)
-        await app.bot.send_message(chat_id=chat_id, text=msg)
+        payload = build_price_message(results, cfg)
+        text = payload["text"]
+        booking_url = payload["top_booking_url"]
+
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            disable_web_page_preview=True,
+        )
+
+        if booking_url:
+            keyboard = [[
+                InlineKeyboardButton("🎟️ Bilet linkini aç", url=booking_url)
+            ]]
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text="En uygun seçenek için bağlantı:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                disable_web_page_preview=True,
+            )
 
     except Exception as e:
         error_text = str(e)
@@ -311,7 +329,7 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
 
 
 async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Hourly check running for %s watches...", len(active_watches))
+    logger.info("Scheduled check running for %s watches...", len(active_watches))
 
     for chat_id, cfg in list(active_watches.items()):
         await do_price_check(context.application, chat_id, cfg)
@@ -356,7 +374,7 @@ def main():
         scheduled_check,
         interval=10800,
         first=10,
-        name="hourly_price_check"
+        name="price_check_every_3_hours"
     )
 
     logger.info("Bot başlatılıyor...")
