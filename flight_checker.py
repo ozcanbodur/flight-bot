@@ -1,5 +1,6 @@
 import os
 import aiohttp
+import asyncio
 import logging
 from datetime import datetime
 
@@ -8,6 +9,10 @@ logger = logging.getLogger(__name__)
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 RAPIDAPI_HOST = "skyscanner-flights-travel-api.p.rapidapi.com"
 BASE_URL = f"https://{RAPIDAPI_HOST}"
+
+RETRYABLE_STATUS_CODES = {502, 503, 504}
+MAX_RETRIES = 3
+RETRY_DELAYS = [2, 5, 8]
 
 
 def _to_api_date(date_str: str) -> str:
@@ -25,16 +30,49 @@ async def _request_json(session: aiohttp.ClientSession, path: str, params: dict)
         "Content-Type": "application/json",
     }
 
-    async with session.get(url, headers=headers, params=params) as resp:
-        text = await resp.text()
+    last_error = None
 
-        if resp.status != 200:
-            raise Exception(f"API Hatası {resp.status}: {text}")
-
+    for attempt in range(MAX_RETRIES):
         try:
-            return await resp.json()
-        except Exception:
-            raise Exception(f"Geçersiz JSON yanıtı: {text}")
+            async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=35)) as resp:
+                text = await resp.text()
+
+                if resp.status == 200:
+                    try:
+                        return await resp.json()
+                    except Exception:
+                        raise Exception(f"Geçersiz JSON yanıtı: {text}")
+
+                if resp.status in RETRYABLE_STATUS_CODES:
+                    last_error = Exception(f"API Hatası {resp.status}: {text}")
+                    if attempt < MAX_RETRIES - 1:
+                        delay = RETRY_DELAYS[attempt]
+                        logger.warning(
+                            "Retryable API error on %s attempt %s/%s. Waiting %ss. Response: %s",
+                            path, attempt + 1, MAX_RETRIES, delay, text[:500]
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise last_error
+
+                raise Exception(f"API Hatası {resp.status}: {text}")
+
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                delay = RETRY_DELAYS[attempt]
+                logger.warning(
+                    "Network error on %s attempt %s/%s. Waiting %ss. Error: %s",
+                    path, attempt + 1, MAX_RETRIES, delay, str(e)
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise Exception(f"Ağ hatası: {str(e)}")
+
+    if last_error:
+        raise last_error
+
+    raise Exception("Bilinmeyen API hatası")
 
 
 async def search_airport(session: aiohttp.ClientSession, query: str):
@@ -148,13 +186,26 @@ def _format_price(price_obj):
     if isinstance(price_obj, dict):
         formatted = price_obj.get("formatted")
         if formatted:
-            return formatted.replace("TRY ", "").replace(" USD ", " ").replace("USD ", "$")
+            if formatted.startswith("TRY "):
+                number = formatted.replace("TRY ", "").strip()
+                try:
+                    amount = float(number)
+                    return f"{amount:,.0f}".replace(",", ".") + " TL"
+                except ValueError:
+                    return formatted
+            return formatted
+
         amount = price_obj.get("amount")
         currency = price_obj.get("currency", "")
         if amount is not None:
-            if currency == "TRY":
-                return f"{float(amount):,.0f}".replace(",", ".") + " TL"
-            return f"{currency} {amount}"
+            try:
+                numeric = float(amount)
+                if currency == "TRY":
+                    return f"{numeric:,.0f}".replace(",", ".") + " TL"
+                return f"{currency} {numeric:,.2f}"
+            except ValueError:
+                return f"{currency} {amount}"
+
     return "Fiyat yok"
 
 
@@ -173,6 +224,7 @@ def _format_duration(minutes):
         return ""
     hours = minutes // 60
     mins = minutes % 60
+
     if hours and mins:
         return f"{hours}s {mins}dk"
     if hours:
