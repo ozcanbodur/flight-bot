@@ -5,173 +5,190 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
-RAPIDAPI_HOST = "skyscanner50.p.rapidapi.com"
-
-HEADERS = {
-    "X-RapidAPI-Key": RAPIDAPI_KEY,
-    "X-RapidAPI-Host": RAPIDAPI_HOST
-}
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
+RAPIDAPI_HOST = "skyscanner-flights-travel-api.p.rapidapi.com"
+BASE_URL = f"https://{RAPIDAPI_HOST}"
 
 
-def parse_date(date_str: str) -> str:
-    """GG.AA.YYYY → YYYY-MM-DD"""
-    dt = datetime.strptime(date_str, "%d.%m.%Y")
-    return dt.strftime("%Y-%m-%d")
-
-
-async def search_flights(
-    origin: str,
-    destination: str,
-    depart_date: str,
-    return_date: str | None,
-    passengers: int
-) -> dict:
+def _to_api_date(date_str: str) -> str:
     """
-    Skyscanner RapidAPI üzerinden uçuş arama.
-    Endpoint: /api/v1/searchFlights
+    Bot tarafında gelen GG.AA.YYYY formatını YYYY-MM-DD formatına çevirir.
+    Eğer zaten YYYY-MM-DD geldiyse olduğu gibi döner.
     """
-    url = f"https://{RAPIDAPI_HOST}/api/v1/searchFlights"
+    try:
+        return datetime.strptime(date_str, "%d.%m.%Y").strftime("%Y-%m-%d")
+    except ValueError:
+        return date_str
 
-    params = {
-        "originSkyId": origin,
-        "destinationSkyId": destination,
-        "originEntityId": origin,
-        "destinationEntityId": destination,
-        "date": parse_date(depart_date),
-        "adults": str(passengers),
-        "currency": "TRY",
-        "market": "TR",
-        "locale": "tr-TR",
-        "cabinClass": "economy",
-        "sortBy": "best",
-        "limit": "5"
+
+async def _request_json(session: aiohttp.ClientSession, path: str, params: dict):
+    url = f"{BASE_URL}{path}"
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": RAPIDAPI_HOST,
     }
 
-    if return_date:
-        params["returnDate"] = parse_date(return_date)
+    async with session.get(url, headers=headers, params=params) as resp:
+        text = await resp.text()
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=HEADERS, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise Exception(f"API Hatası {resp.status}: {text[:200]}")
-            data = await resp.json()
+        if resp.status != 200:
+            raise Exception(f"API Hatası {resp.status}: {text}")
 
-    return parse_skyscanner_response(data, passengers)
-
-
-def parse_skyscanner_response(data: dict, passengers: int) -> dict:
-    """API yanıtını işle ve fiyat listesi çıkar."""
-    results = []
-
-    try:
-        itineraries = data.get("data", {}).get("itineraries", [])
-
-        for item in itineraries[:5]:
-            price_raw = item.get("price", {}).get("raw", 0)
-            price_formatted = item.get("price", {}).get("formatted", "N/A")
-
-            legs = item.get("legs", [])
-            segments_info = []
-
-            for leg in legs:
-                carriers = leg.get("carriers", {}).get("marketing", [])
-                airline = carriers[0].get("name", "Bilinmiyor") if carriers else "Bilinmiyor"
-                departure = leg.get("departure", "")
-                arrival = leg.get("arrival", "")
-                duration = leg.get("durationInMinutes", 0)
-                stops = leg.get("stopCount", 0)
-
-                segments_info.append({
-                    "airline": airline,
-                    "departure": departure,
-                    "arrival": arrival,
-                    "duration_min": duration,
-                    "stops": stops
-                })
-
-            results.append({
-                "price_raw": price_raw,
-                "price_formatted": price_formatted,
-                "price_per_person": price_raw / passengers if passengers > 0 else price_raw,
-                "legs": segments_info,
-                "score": item.get("score", 0)
-            })
-
-        # Fiyata göre sırala
-        results.sort(key=lambda x: x["price_raw"])
-
-    except Exception as e:
-        logger.error(f"Response parse error: {e}")
-        logger.debug(f"Raw data: {data}")
-
-    return {
-        "flights": results,
-        "checked_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
-        "total_found": len(results)
-    }
+        try:
+            return await resp.json()
+        except Exception:
+            raise Exception(f"Geçersiz JSON yanıtı: {text}")
 
 
-def format_duration(minutes: int) -> str:
-    h = minutes // 60
-    m = minutes % 60
-    return f"{h}s {m}dk" if h > 0 else f"{m}dk"
-
-
-def format_datetime(dt_str: str) -> str:
-    try:
-        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        return dt.strftime("%d.%m %H:%M")
-    except:
-        return dt_str[:16] if dt_str else "?"
-
-
-def format_price_message(results: dict, cfg: dict) -> str:
-    origin = cfg["origin"]
-    destination = cfg["destination"]
-    depart = cfg["depart_date"]
-    ret = cfg.get("return_date")
-    pax = cfg["passengers"]
-    checked_at = results["checked_at"]
-    flights = results["flights"]
-
-    trip_type = "🔄 Gidiş-Dönüş" if ret else "➡️ Tek Yön"
-    ret_str = f" / {ret}" if ret else ""
-
-    header = (
-        f"✈️ *{origin} → {destination}*\n"
-        f"{trip_type} | 📅 {depart}{ret_str} | 👥 {pax} yolcu\n"
-        f"🕐 Kontrol: {checked_at}\n"
-        f"{'─' * 30}\n"
+async def search_airport(session: aiohttp.ClientSession, query: str):
+    """
+    Havalimanı / şehir arar.
+    Örn: IST, SAW, Sarajevo, London
+    En uygun sonucu döndürür.
+    """
+    data = await _request_json(
+        session,
+        "/api/v1/flights/searchAirport",
+        {"query": query}
     )
 
-    if not flights:
-        return header + "\n⚠️ Fiyat bulunamadı. Tarih veya havalimanı kodunu kontrol edin."
+    # API yapısı değişebilir diye birkaç olası alanı deniyoruz
+    candidates = []
 
-    body = ""
-    for i, f in enumerate(flights[:5], 1):
-        medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i - 1]
-        legs = f["legs"]
+    if isinstance(data, dict):
+        for key in ["data", "results", "airports", "places"]:
+            if isinstance(data.get(key), list):
+                candidates = data[key]
+                break
+    elif isinstance(data, list):
+        candidates = data
 
-        body += f"\n{medal} *{f['price_formatted']}*"
-        if pax > 1:
-            per_person = f['price_raw'] / pax
-            body += f"  _(kişi başı ~{per_person:,.0f} ₺)_"
-        body += "\n"
+    if not candidates:
+        raise Exception(f"Havalimanı bulunamadı: {query}")
 
-        for j, leg in enumerate(legs):
-            direction = "🛫 Gidiş" if j == 0 else "🛬 Dönüş"
-            stops_str = "Aktarmasız" if leg["stops"] == 0 else f"{leg['stops']} aktarma"
-            body += (
-                f"   {direction}: {leg['airline']}\n"
-                f"   {format_datetime(leg['departure'])} → {format_datetime(leg['arrival'])}"
-                f" ({format_duration(leg['duration_min'])}, {stops_str})\n"
+    best = candidates[0]
+
+    sky_id = (
+        best.get("skyId")
+        or best.get("navigation", {}).get("relevantFlightParams", {}).get("skyId")
+        or best.get("presentation", {}).get("skyId")
+    )
+
+    entity_id = (
+        best.get("entityId")
+        or best.get("navigation", {}).get("relevantFlightParams", {}).get("entityId")
+        or best.get("presentation", {}).get("entityId")
+    )
+
+    name = (
+        best.get("presentation", {}).get("title")
+        or best.get("name")
+        or best.get("title")
+        or query
+    )
+
+    if not sky_id or not entity_id:
+        raise Exception(f"{query} için gerekli airport kimlikleri alınamadı.")
+
+    return {
+        "name": name,
+        "skyId": str(sky_id),
+        "entityId": str(entity_id),
+    }
+
+
+async def search_flights(origin: str, destination: str, depart_date: str,
+                         return_date: str = None, passengers: int = 1):
+    """
+    Uçuş araması yapar.
+    origin / destination: IST, SAW, LHR, SJJ gibi kod veya şehir adı
+    depart_date / return_date: GG.AA.YYYY veya YYYY-MM-DD
+    """
+    if not RAPIDAPI_KEY:
+        raise Exception("RAPIDAPI_KEY environment variable eksik.")
+
+    depart_date_api = _to_api_date(depart_date)
+    return_date_api = _to_api_date(return_date) if return_date else None
+
+    async with aiohttp.ClientSession() as session:
+        origin_info = await search_airport(session, origin)
+        destination_info = await search_airport(session, destination)
+
+        params = {
+            "originSkyId": origin_info["skyId"],
+            "destinationSkyId": destination_info["skyId"],
+            "originEntityId": origin_info["entityId"],
+            "destinationEntityId": destination_info["entityId"],
+            "date": depart_date_api,
+            "adults": str(passengers),
+            "cabinClass": "economy",
+            "currency": "TRY",
+            "market": "TR",
+        }
+
+        if return_date_api:
+            params["returnDate"] = return_date_api
+
+        data = await _request_json(
+            session,
+            "/api/v1/flights/searchFlights",
+            params
+        )
+
+        return {
+            "raw": data,
+            "origin": origin_info,
+            "destination": destination_info,
+            "depart_date": depart_date_api,
+            "return_date": return_date_api,
+            "passengers": passengers,
+        }
+
+
+def _extract_itineraries(raw: dict):
+    """
+    API cevabından itinerary listesini çıkarmaya çalışır.
+    Farklı response yapıları için esnek tutuldu.
+    """
+    if not isinstance(raw, dict):
+        return []
+
+    for key in ["data", "itineraries", "results"]:
+        value = raw.get(key)
+        if isinstance(value, list):
+            return value
+
+    data = raw.get("data")
+    if isinstance(data, dict):
+        for key in ["itineraries", "results"]:
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+
+    return []
+
+
+def _extract_price(item: dict):
+    price = item.get("price") or item.get("pricingOptions") or item.get("cheapestPrice")
+    if isinstance(price, dict):
+        return (
+            price.get("formatted")
+            or price.get("displayAmount")
+            or price.get("amount")
+            or "Fiyat yok"
+        )
+    if isinstance(price, list) and price:
+        first = price[0]
+        if isinstance(first, dict):
+            return (
+                first.get("formattedPrice")
+                or first.get("price", {}).get("formatted")
+                or first.get("amount")
+                or "Fiyat yok"
             )
+    if isinstance(price, str):
+        return price
+    return "Fiyat yok"
 
-    footer = f"\n💡 En ucuz: *{flights[0]['price_formatted']}*"
-    if len(flights) > 1:
-        diff = flights[-1]['price_raw'] - flights[0]['price_raw']
-        footer += f" | Fark: {diff:,.0f} ₺"
 
-    return header + body + footer
+def format_price_message(results: dict, cfg
