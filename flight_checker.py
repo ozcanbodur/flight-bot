@@ -11,10 +11,6 @@ BASE_URL = f"https://{RAPIDAPI_HOST}"
 
 
 def _to_api_date(date_str: str) -> str:
-    """
-    Bot tarafında gelen GG.AA.YYYY formatını YYYY-MM-DD formatına çevirir.
-    Eğer zaten YYYY-MM-DD geldiyse olduğu gibi döner.
-    """
     try:
         return datetime.strptime(date_str, "%d.%m.%Y").strftime("%Y-%m-%d")
     except ValueError:
@@ -26,6 +22,7 @@ async def _request_json(session: aiohttp.ClientSession, path: str, params: dict)
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": RAPIDAPI_HOST,
+        "Content-Type": "application/json",
     }
 
     async with session.get(url, headers=headers, params=params) as resp:
@@ -41,18 +38,16 @@ async def _request_json(session: aiohttp.ClientSession, path: str, params: dict)
 
 
 async def search_airport(session: aiohttp.ClientSession, query: str):
-    """
-    Havalimanı / şehir arar.
-    Örn: IST, SAW, Sarajevo, London
-    En uygun sonucu döndürür.
-    """
     data = await _request_json(
         session,
-        "/api/v1/flights/searchAirport",
-        {"query": query}
+        "/flights/searchAirport",
+        {
+            "market": "TR",
+            "locale": "tr-TR",
+            "query": query,
+        },
     )
 
-    # API yapısı değişebilir diye birkaç olası alanı deniyoruz
     candidates = []
 
     if isinstance(data, dict):
@@ -88,7 +83,7 @@ async def search_airport(session: aiohttp.ClientSession, query: str):
     )
 
     if not sky_id or not entity_id:
-        raise Exception(f"{query} için gerekli airport kimlikleri alınamadı.")
+        raise Exception(f"{query} için skyId/entityId alınamadı. API yanıtını kontrol et.")
 
     return {
         "name": name,
@@ -99,11 +94,6 @@ async def search_airport(session: aiohttp.ClientSession, query: str):
 
 async def search_flights(origin: str, destination: str, depart_date: str,
                          return_date: str = None, passengers: int = 1):
-    """
-    Uçuş araması yapar.
-    origin / destination: IST, SAW, LHR, SJJ gibi kod veya şehir adı
-    depart_date / return_date: GG.AA.YYYY veya YYYY-MM-DD
-    """
     if not RAPIDAPI_KEY:
         raise Exception("RAPIDAPI_KEY environment variable eksik.")
 
@@ -115,15 +105,18 @@ async def search_flights(origin: str, destination: str, depart_date: str,
         destination_info = await search_airport(session, destination)
 
         params = {
-            "originSkyId": origin_info["skyId"],
-            "destinationSkyId": destination_info["skyId"],
-            "originEntityId": origin_info["entityId"],
-            "destinationEntityId": destination_info["entityId"],
-            "date": depart_date_api,
-            "adults": str(passengers),
-            "cabinClass": "economy",
-            "currency": "TRY",
+            "countryCode": "TR",
             "market": "TR",
+            "currency": "TRY",
+            "adults": str(passengers),
+            "childrens": "0",
+            "infants": "0",
+            "cabinClass": "economy",
+            "date": depart_date_api,
+            "originSkyId": origin_info["skyId"],
+            "originEntityId": origin_info["entityId"],
+            "destinationSkyId": destination_info["skyId"],
+            "destinationEntityId": destination_info["entityId"],
         }
 
         if return_date_api:
@@ -131,7 +124,7 @@ async def search_flights(origin: str, destination: str, depart_date: str,
 
         data = await _request_json(
             session,
-            "/api/v1/flights/searchFlights",
+            "/flights/searchFlights",
             params
         )
 
@@ -146,10 +139,6 @@ async def search_flights(origin: str, destination: str, depart_date: str,
 
 
 def _extract_itineraries(raw: dict):
-    """
-    API cevabından itinerary listesini çıkarmaya çalışır.
-    Farklı response yapıları için esnek tutuldu.
-    """
     if not isinstance(raw, dict):
         return []
 
@@ -170,24 +159,28 @@ def _extract_itineraries(raw: dict):
 
 def _extract_price(item: dict):
     price = item.get("price") or item.get("pricingOptions") or item.get("cheapestPrice")
+
     if isinstance(price, dict):
         return (
             price.get("formatted")
             or price.get("displayAmount")
-            or price.get("amount")
+            or str(price.get("amount"))
             or "Fiyat yok"
         )
+
     if isinstance(price, list) and price:
         first = price[0]
         if isinstance(first, dict):
             return (
                 first.get("formattedPrice")
                 or first.get("price", {}).get("formatted")
-                or first.get("amount")
+                or str(first.get("amount"))
                 or "Fiyat yok"
             )
+
     if isinstance(price, str):
         return price
+
     return "Fiyat yok"
 
 
