@@ -24,28 +24,32 @@ logger = logging.getLogger(__name__)
 # Conversation states
 ORIGIN, DESTINATION, DEPART_DATE, RETURN_DATE, PASSENGERS, CONFIRM = range(6)
 
-# Active watches: {chat_id: {config}}
+# Aktif takipler chat bazlı tutulur
+# private chat ise kullanıcıya gider
+# grup ise gruba gider
 active_watches = {}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    text = (
         "✈️ *Uçuş Fiyat Takip Botuna Hoş Geldiniz!*\n\n"
-        "Her saat başı seçtiğiniz rotanın fiyatlarını kontrol edip size bildiririm.\n\n"
+        "Seçtiğiniz rota için her saat başı fiyat kontrolü yaparım.\n\n"
         "📌 Komutlar:\n"
         "/watch — Yeni rota takibi başlat\n"
-        "/list — Aktif takiplerim\n"
+        "/list — Aktif takibi göster\n"
+        "/check — Şimdi fiyat kontrol et\n"
         "/stop — Takibi durdur\n"
-        "/check — Şimdi fiyat kontrol et",
-        parse_mode="Markdown"
+        "/cancel — Mevcut işlemi iptal et\n\n"
+        "Grup içinde de kullanılabilir. Takip hangi sohbette başlatıldıysa mesajlar oraya gider."
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def watch_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
-        "🛫 *Kalkış havalimanı kodunu girin*\n"
-        "_(Örnek: IST, SAW, ESB, ADB)_",
+        "🛫 *Kalkış havalimanı veya şehir bilgisini girin*\n"
+        "_Örnek: IST, SAW, SJJ, London_",
         parse_mode="Markdown"
     )
     return ORIGIN
@@ -54,8 +58,8 @@ async def watch_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["origin"] = update.message.text.strip().upper()
     await update.message.reply_text(
-        "🛬 *Varış havalimanı kodunu girin*\n"
-        "_(Örnek: LHR, CDG, JFK, DXB)_",
+        "🛬 *Varış havalimanı veya şehir bilgisini girin*\n"
+        "_Örnek: SJJ, LHR, CDG_",
         parse_mode="Markdown"
     )
     return DESTINATION
@@ -65,7 +69,7 @@ async def get_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["destination"] = update.message.text.strip().upper()
     await update.message.reply_text(
         "📅 *Gidiş tarihini girin*\n"
-        "_(Format: GG.AA.YYYY — Örnek: 15.07.2026)_",
+        "_Format: GG.AA.YYYY — Örnek: 01.05.2026_",
         parse_mode="Markdown"
     )
     return DEPART_DATE
@@ -79,7 +83,7 @@ async def get_depart_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [[
             InlineKeyboardButton("✅ Evet, gidiş-dönüş", callback_data="roundtrip"),
-            InlineKeyboardButton("❌ Hayır, tek yön", callback_data="oneway")
+            InlineKeyboardButton("❌ Hayır, tek yön", callback_data="oneway"),
         ]]
 
         await update.message.reply_text(
@@ -107,7 +111,8 @@ async def get_return_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["awaiting_return"] = True
     await query.edit_message_text(
-        "📅 *Dönüş tarihini girin*\n_(Format: GG.AA.YYYY)_",
+        "📅 *Dönüş tarihini girin*\n"
+        "_Format: GG.AA.YYYY_",
         parse_mode="Markdown"
     )
     return RETURN_DATE
@@ -154,7 +159,7 @@ async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [[
             InlineKeyboardButton("✅ Başlat", callback_data="confirm_yes"),
-            InlineKeyboardButton("❌ İptal", callback_data="confirm_no")
+            InlineKeyboardButton("❌ İptal", callback_data="confirm_no"),
         ]]
 
         await update.message.reply_text(
@@ -171,6 +176,7 @@ async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     chat_id = query.message.chat_id
 
     if query.data == "confirm_yes":
@@ -181,11 +187,12 @@ async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "return_date": context.user_data.get("return_date"),
             "passengers": context.user_data["passengers"],
         }
+
         active_watches[chat_id] = cfg
 
         await query.edit_message_text(
             f"✅ *Takip başlatıldı!*\n\n"
-            f"`{cfg['origin']}` → `{cfg['destination']}` rotası her saat başı kontrol edilecek.\n"
+            f"`{cfg['origin']} → {cfg['destination']}` rotası her saat başı kontrol edilecek.\n"
             f"İlk kontrol şimdi yapılıyor...",
             parse_mode="Markdown"
         )
@@ -201,7 +208,7 @@ async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def list_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
 
     if chat_id not in active_watches:
         await update.message.reply_text("📭 Aktif takibiniz bulunmuyor. /watch ile başlayın.")
@@ -212,7 +219,7 @@ async def list_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"📡 *Aktif Takip*\n\n"
-        f"🛫 `{cfg['origin']}` → `{cfg['destination']}`\n"
+        f"🛫 `{cfg['origin']} → {cfg['destination']}`\n"
         f"📅 Gidiş: `{cfg['depart_date']}`\n"
         f"📅 Dönüş: `{ret}`\n"
         f"👥 Yolcu: `{cfg['passengers']}`",
@@ -221,7 +228,7 @@ async def list_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stop_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
 
     if chat_id in active_watches:
         del active_watches[chat_id]
@@ -231,7 +238,7 @@ async def stop_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
 
     if chat_id not in active_watches:
         await update.message.reply_text("📭 Önce /watch ile takip başlatın.")
@@ -248,17 +255,39 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
             destination=cfg["destination"],
             depart_date=cfg["depart_date"],
             return_date=cfg.get("return_date"),
-            passengers=cfg["passengers"]
+            passengers=cfg["passengers"],
         )
 
         msg = format_price_message(results, cfg)
         await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
 
     except Exception as e:
+        error_text = str(e)
+
+        if "API Hatası 502" in error_text:
+            friendly_message = (
+                "⚠️ Uçuş sağlayıcısı şu anda geçici olarak yanıt vermiyor.\n"
+                "Lütfen birkaç dakika sonra tekrar deneyin."
+            )
+        elif "API Hatası 403" in error_text:
+            friendly_message = (
+                "⚠️ API erişim veya abonelik sorunu var.\n"
+                "RapidAPI aboneliğini ve anahtarını kontrol edin."
+            )
+        elif "API Hatası 404" in error_text:
+            friendly_message = (
+                "⚠️ API endpoint bulunamadı.\n"
+                "Kullandığımız RapidAPI endpoint bilgisini tekrar kontrol etmek gerekiyor."
+            )
+        else:
+            friendly_message = (
+                f"⚠️ Fiyat kontrolü sırasında hata oluştu:\n`{error_text}`"
+            )
+
         logger.exception("Price check error")
         await app.bot.send_message(
             chat_id=chat_id,
-            text=f"⚠️ Fiyat kontrolü sırasında hata oluştu:\n`{str(e)}`",
+            text=friendly_message,
             parse_mode="Markdown"
         )
 
@@ -304,7 +333,6 @@ def main():
     app.add_handler(CommandHandler("stop", stop_watch))
     app.add_handler(CommandHandler("check", check_now))
 
-    # Her saat başı çalıştır
     app.job_queue.run_repeating(
         scheduled_check,
         interval=3600,
