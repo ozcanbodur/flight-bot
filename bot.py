@@ -21,7 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ORIGIN, DESTINATION, DEPART_DATE, RETURN_DATE, PASSENGERS, CONFIRM = range(6)
+ORIGIN, DESTINATION, DEPART_DATE, RETURN_DATE, PASSENGERS, STOP_PREF, CONFIRM = range(7)
 
 active_watches = {}
 
@@ -135,32 +135,59 @@ async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["passengers"] = n
 
-        cfg = context.user_data
-        ret = cfg.get("return_date") or "Yok (tek yön)"
-
-        summary = (
-            f"📋 Takip Özeti\n\n"
-            f"🛫 Kalkış: {cfg['origin']}\n"
-            f"🛬 Varış: {cfg['destination']}\n"
-            f"📅 Gidiş: {cfg['depart_date']}\n"
-            f"📅 Dönüş: {ret}\n"
-            f"👥 Yolcu: {n}\n\n"
-            f"Her saat başı fiyat kontrol edilecek. Onaylıyor musunuz?"
-        )
-
         keyboard = [[
-            InlineKeyboardButton("✅ Başlat", callback_data="confirm_yes"),
-            InlineKeyboardButton("❌ İptal", callback_data="confirm_no"),
+            InlineKeyboardButton("Fark etmez", callback_data="stop_any"),
+            InlineKeyboardButton("Aktarmasız", callback_data="stop_nonstop"),
+            InlineKeyboardButton("Aktarmalı", callback_data="stop_with_stops"),
         ]]
 
         await update.message.reply_text(
-            summary,
+            "🧭 Uçuş tercihini seçin:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return CONFIRM
+        return STOP_PREF
     except ValueError:
         await update.message.reply_text("❌ 1-9 arası bir sayı girin.")
         return PASSENGERS
+
+
+async def get_stop_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    mapping = {
+        "stop_any": ("any", "Fark etmez"),
+        "stop_nonstop": ("nonstop", "Sadece aktarmasız"),
+        "stop_with_stops": ("with_stops", "Sadece aktarmalı"),
+    }
+
+    pref_value, pref_label = mapping.get(query.data, ("any", "Fark etmez"))
+    context.user_data["stop_preference"] = pref_value
+
+    cfg = context.user_data
+    ret = cfg.get("return_date") or "Yok (tek yön)"
+
+    summary = (
+        f"📋 Takip Özeti\n\n"
+        f"🛫 Kalkış: {cfg['origin']}\n"
+        f"🛬 Varış: {cfg['destination']}\n"
+        f"📅 Gidiş: {cfg['depart_date']}\n"
+        f"📅 Dönüş: {ret}\n"
+        f"👥 Yolcu: {cfg['passengers']}\n"
+        f"🧭 Tercih: {pref_label}\n\n"
+        f"Her saat başı fiyat kontrol edilecek. Onaylıyor musunuz?"
+    )
+
+    keyboard = [[
+        InlineKeyboardButton("✅ Başlat", callback_data="confirm_yes"),
+        InlineKeyboardButton("❌ İptal", callback_data="confirm_no"),
+    ]]
+
+    await query.edit_message_text(
+        summary,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CONFIRM
 
 
 async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,6 +203,7 @@ async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "depart_date": context.user_data["depart_date"],
             "return_date": context.user_data.get("return_date"),
             "passengers": context.user_data["passengers"],
+            "stop_preference": context.user_data.get("stop_preference", "any"),
         }
 
         active_watches[chat_id] = cfg
@@ -187,7 +215,6 @@ async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await do_price_check(context.application, chat_id, cfg)
-
     else:
         await query.edit_message_text(
             "❌ İptal edildi. /watch ile tekrar başlayabilirsiniz."
@@ -206,12 +233,20 @@ async def list_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg = active_watches[chat_id]
     ret = cfg.get("return_date") or "Tek yön"
 
+    pref_map = {
+        "any": "Fark etmez",
+        "nonstop": "Aktarmasız",
+        "with_stops": "Aktarmalı",
+    }
+    pref_label = pref_map.get(cfg.get("stop_preference", "any"), "Fark etmez")
+
     await update.message.reply_text(
         f"📡 Aktif Takip\n\n"
         f"🛫 {cfg['origin']} → {cfg['destination']}\n"
         f"📅 Gidiş: {cfg['depart_date']}\n"
         f"📅 Dönüş: {ret}\n"
-        f"👥 Yolcu: {cfg['passengers']}"
+        f"👥 Yolcu: {cfg['passengers']}\n"
+        f"🧭 Tercih: {pref_label}"
     )
 
 
@@ -244,6 +279,7 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
             depart_date=cfg["depart_date"],
             return_date=cfg.get("return_date"),
             passengers=cfg["passengers"],
+            stop_preference=cfg.get("stop_preference", "any"),
         )
 
         msg = format_price_message(results, cfg)
@@ -252,7 +288,7 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
     except Exception as e:
         error_text = str(e)
 
-        if "API Hatası 502" in error_text:
+        if "API Hatası 502" in error_text or "API Hatası 503" in error_text or "API Hatası 504" in error_text:
             friendly_message = (
                 "⚠️ Uçuş sağlayıcısı şu anda geçici olarak yanıt vermiyor.\n"
                 "Lütfen birkaç dakika sonra tekrar deneyin."
@@ -265,18 +301,13 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
         elif "API Hatası 404" in error_text:
             friendly_message = (
                 "⚠️ API endpoint bulunamadı.\n"
-                "Kullandığımız RapidAPI endpoint bilgisini tekrar kontrol etmek gerekiyor."
+                "RapidAPI endpoint bilgisini tekrar kontrol etmek gerekiyor."
             )
         else:
-            friendly_message = (
-                f"⚠️ Fiyat kontrolü sırasında hata oluştu:\n{error_text}"
-            )
+            friendly_message = f"⚠️ Fiyat kontrolü sırasında hata oluştu:\n{error_text}"
 
         logger.exception("Price check error")
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text=friendly_message
-        )
+        await app.bot.send_message(chat_id=chat_id, text=friendly_message)
 
 
 async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
@@ -309,6 +340,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_return_date_text),
             ],
             PASSENGERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_passengers)],
+            STOP_PREF: [CallbackQueryHandler(get_stop_pref, pattern="^stop_")],
             CONFIRM: [CallbackQueryHandler(confirm_watch, pattern="^confirm_")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
