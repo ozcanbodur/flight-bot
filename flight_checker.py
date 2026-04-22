@@ -191,4 +191,49 @@ def _extract_price(item: dict):
     return "Fiyat yok"
 
 
-def format_price_message(results: dict, cfg
+def format_price_message(results: dict, cfg: dict) -> str:
+    raw = results.get("raw", {})
+    itineraries = _extract_itineraries(raw)
+
+    route = f"{cfg['origin']} → {cfg['destination']}"
+    trip_type = "🔄 Gidiş-Dönüş" if cfg.get("return_date") else "➡️ Tek Yön"
+    dates = cfg["depart_date"]
+    if cfg.get("return_date"):
+        dates += f" / {cfg['return_date']}"
+
+    header = (
+        f"✈️ *{route}*\n"
+        f"{trip_type} | 📅 {dates} | 👥 {cfg['passengers']} yolcu\n"
+        f"🕐 Kontrol: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        f"{'─' * 24}\n"
+    )
+
+    if not itineraries:
+        return header + "\n❌ Uygun uçuş sonucu bulunamadı."
+
+    lines = [header]
+
+    for idx, item in enumerate(itineraries[:5], start=1):
+        price = _extract_price(item)
+        lines.append(f"{idx}. 💸 *{price}*")
+
+        outbound = item.get("outbound") or item.get("legs", [{}])[0]
+        inbound = item.get("inbound")
+
+        if isinstance(outbound, dict):
+            dep = outbound.get("departure") or outbound.get("departureDateTime") or "-"
+            arr = outbound.get("arrival") or outbound.get("arrivalDateTime") or "-"
+            carrier = outbound.get("carrier") or outbound.get("marketingCarrier") or "Havayolu bilgisi yok"
+            lines.append(f"   🛫 {carrier}")
+            lines.append(f"   {dep} → {arr}")
+
+        if isinstance(inbound, dict):
+            dep = inbound.get("departure") or inbound.get("departureDateTime") or "-"
+            arr = inbound.get("arrival") or inbound.get("arrivalDateTime") or "-"
+            carrier = inbound.get("carrier") or inbound.get("marketingCarrier") or "Havayolu bilgisi yok"
+            lines.append(f"   🛬 {carrier}")
+            lines.append(f"   {dep} → {arr}")
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
