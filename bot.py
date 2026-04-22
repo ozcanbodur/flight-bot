@@ -1,13 +1,18 @@
 import os
-import asyncio
 import logging
 from datetime import datetime
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ConversationHandler, ContextTypes, filters
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
 )
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from flight_checker import search_flights, format_price_message
 
 logging.basicConfig(
@@ -22,6 +27,7 @@ ORIGIN, DESTINATION, DEPART_DATE, RETURN_DATE, PASSENGERS, CONFIRM = range(6)
 # Active watches: {chat_id: {config}}
 active_watches = {}
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✈️ *Uçuş Fiyat Takip Botuna Hoş Geldiniz!*\n\n"
@@ -34,13 +40,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 async def watch_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     await update.message.reply_text(
         "🛫 *Kalkış havalimanı kodunu girin*\n"
         "_(Örnek: IST, SAW, ESB, ADB)_",
         parse_mode="Markdown"
     )
     return ORIGIN
+
 
 async def get_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["origin"] = update.message.text.strip().upper()
@@ -51,24 +60,28 @@ async def get_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return DESTINATION
 
+
 async def get_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["destination"] = update.message.text.strip().upper()
     await update.message.reply_text(
         "📅 *Gidiş tarihini girin*\n"
-        "_(Format: GG.AA.YYYY — Örnek: 15.07.2025)_",
+        "_(Format: GG.AA.YYYY — Örnek: 15.07.2026)_",
         parse_mode="Markdown"
     )
     return DEPART_DATE
+
 
 async def get_depart_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         date_str = update.message.text.strip()
         datetime.strptime(date_str, "%d.%m.%Y")
         context.user_data["depart_date"] = date_str
+
         keyboard = [[
             InlineKeyboardButton("✅ Evet, gidiş-dönüş", callback_data="roundtrip"),
             InlineKeyboardButton("❌ Hayır, tek yön", callback_data="oneway")
         ]]
+
         await update.message.reply_text(
             "🔄 *Gidiş-dönüş bilet mi arıyorsunuz?*",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -76,8 +89,11 @@ async def get_depart_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return RETURN_DATE
     except ValueError:
-        await update.message.reply_text("❌ Geçersiz tarih formatı! Lütfen GG.AA.YYYY formatında girin.")
+        await update.message.reply_text(
+            "❌ Geçersiz tarih formatı. Lütfen GG.AA.YYYY formatında girin."
+        )
         return DEPART_DATE
+
 
 async def get_return_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -85,39 +101,47 @@ async def get_return_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "oneway":
         context.user_data["return_date"] = None
+        context.user_data["awaiting_return"] = False
         await query.edit_message_text("👥 *Kaç yolcu? (1-9)*", parse_mode="Markdown")
         return PASSENGERS
-    else:
-        await query.edit_message_text(
-            "📅 *Dönüş tarihini girin*\n_(Format: GG.AA.YYYY)_",
-            parse_mode="Markdown"
-        )
-        context.user_data["awaiting_return"] = True
-        return RETURN_DATE
+
+    context.user_data["awaiting_return"] = True
+    await query.edit_message_text(
+        "📅 *Dönüş tarihini girin*\n_(Format: GG.AA.YYYY)_",
+        parse_mode="Markdown"
+    )
+    return RETURN_DATE
+
 
 async def get_return_date_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("awaiting_return"):
-        try:
-            date_str = update.message.text.strip()
-            datetime.strptime(date_str, "%d.%m.%Y")
-            context.user_data["return_date"] = date_str
-            context.user_data["awaiting_return"] = False
-            await update.message.reply_text("👥 *Kaç yolcu? (1-9)*", parse_mode="Markdown")
-            return PASSENGERS
-        except ValueError:
-            await update.message.reply_text("❌ Geçersiz format! GG.AA.YYYY şeklinde girin.")
-            return RETURN_DATE
-    return RETURN_DATE
+    if not context.user_data.get("awaiting_return"):
+        await update.message.reply_text("Lütfen önce gidiş-dönüş seçimini yapın.")
+        return RETURN_DATE
+
+    try:
+        date_str = update.message.text.strip()
+        datetime.strptime(date_str, "%d.%m.%Y")
+        context.user_data["return_date"] = date_str
+        context.user_data["awaiting_return"] = False
+
+        await update.message.reply_text("👥 *Kaç yolcu? (1-9)*", parse_mode="Markdown")
+        return PASSENGERS
+    except ValueError:
+        await update.message.reply_text("❌ Geçersiz format. GG.AA.YYYY şeklinde girin.")
+        return RETURN_DATE
+
 
 async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         n = int(update.message.text.strip())
         if not 1 <= n <= 9:
             raise ValueError
+
         context.user_data["passengers"] = n
 
         cfg = context.user_data
         ret = cfg.get("return_date") or "Yok (tek yön)"
+
         summary = (
             f"📋 *Takip Özeti*\n\n"
             f"🛫 Kalkış: `{cfg['origin']}`\n"
@@ -127,10 +151,12 @@ async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 Yolcu: `{n}`\n\n"
             f"Her saat başı fiyat kontrol edilecek. Onaylıyor musunuz?"
         )
+
         keyboard = [[
             InlineKeyboardButton("✅ Başlat", callback_data="confirm_yes"),
             InlineKeyboardButton("❌ İptal", callback_data="confirm_no")
         ]]
+
         await update.message.reply_text(
             summary,
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -140,6 +166,7 @@ async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ 1-9 arası bir sayı girin.")
         return PASSENGERS
+
 
 async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -162,21 +189,27 @@ async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"İlk kontrol şimdi yapılıyor...",
             parse_mode="Markdown"
         )
-        # Hemen bir kontrol yap
+
         await do_price_check(context.application, chat_id, cfg)
+
     else:
-        await query.edit_message_text("❌ İptal edildi. /watch ile tekrar başlayabilirsiniz.")
+        await query.edit_message_text(
+            "❌ İptal edildi. /watch ile tekrar başlayabilirsiniz."
+        )
 
     return ConversationHandler.END
 
+
 async def list_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
     if chat_id not in active_watches:
         await update.message.reply_text("📭 Aktif takibiniz bulunmuyor. /watch ile başlayın.")
         return
 
     cfg = active_watches[chat_id]
     ret = cfg.get("return_date") or "Tek yön"
+
     await update.message.reply_text(
         f"📡 *Aktif Takip*\n\n"
         f"🛫 `{cfg['origin']}` → `{cfg['destination']}`\n"
@@ -186,23 +219,29 @@ async def list_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 async def stop_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
     if chat_id in active_watches:
         del active_watches[chat_id]
         await update.message.reply_text("🛑 Takip durduruldu.")
     else:
         await update.message.reply_text("📭 Aktif takip bulunamadı.")
 
+
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+
     if chat_id not in active_watches:
         await update.message.reply_text("📭 Önce /watch ile takip başlatın.")
         return
+
     await update.message.reply_text("🔍 Fiyatlar kontrol ediliyor...")
     await do_price_check(context.application, chat_id, active_watches[chat_id])
 
-async def do_price_check(app, chat_id, cfg):
+
+async def do_price_check(app: Application, chat_id: int, cfg: dict):
     try:
         results = await search_flights(
             origin=cfg["origin"],
@@ -211,24 +250,30 @@ async def do_price_check(app, chat_id, cfg):
             return_date=cfg.get("return_date"),
             passengers=cfg["passengers"]
         )
+
         msg = format_price_message(results, cfg)
         await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+
     except Exception as e:
-        logger.error(f"Price check error: {e}")
+        logger.exception("Price check error")
         await app.bot.send_message(
             chat_id=chat_id,
-            text=f"⚠️ Fiyat kontrolü sırasında hata oluştu: {str(e)}"
+            text=f"⚠️ Fiyat kontrolü sırasında hata oluştu:\n`{str(e)}`",
+            parse_mode="Markdown"
         )
 
-async def hourly_check(app):
-    """Her saat başı tüm aktif takipler için çalışır."""
-    logger.info(f"Hourly check running for {len(active_watches)} watches...")
+
+async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Hourly check running for %s watches...", len(active_watches))
+
     for chat_id, cfg in list(active_watches.items()):
-        await do_price_check(app, chat_id, cfg)
+        await do_price_check(context.application, chat_id, cfg)
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ İşlem iptal edildi.")
     return ConversationHandler.END
+
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -245,7 +290,7 @@ def main():
             DEPART_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_depart_date)],
             RETURN_DATE: [
                 CallbackQueryHandler(get_return_date, pattern="^(roundtrip|oneway)$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_return_date_text)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_return_date_text),
             ],
             PASSENGERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_passengers)],
             CONFIRM: [CallbackQueryHandler(confirm_watch, pattern="^confirm_")],
@@ -259,18 +304,17 @@ def main():
     app.add_handler(CommandHandler("stop", stop_watch))
     app.add_handler(CommandHandler("check", check_now))
 
-    # Saatlik scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        hourly_check,
-        "cron",
-        minute=0,
-        args=[app]
+    # Her saat başı çalıştır
+    app.job_queue.run_repeating(
+        scheduled_check,
+        interval=3600,
+        first=10,
+        name="hourly_price_check"
     )
-    scheduler.start()
 
     logger.info("Bot başlatılıyor...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
