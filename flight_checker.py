@@ -196,7 +196,6 @@ def _filter_itineraries_by_stops(itineraries, stop_preference):
         if stop_preference == "nonstop":
             if all(sc == 0 for sc in leg_stop_counts):
                 filtered.append(item)
-
         elif stop_preference == "with_stops":
             if any(sc > 0 for sc in leg_stop_counts):
                 filtered.append(item)
@@ -351,10 +350,10 @@ def _format_leg_line(leg):
     else:
         stop_text = "Aktarma bilgisi yok"
 
-    return f"{dep} → {arr} | {duration} | {stop_text}"
+    return f"{dep} → {arr} • {duration} • {stop_text}"
 
 
-def format_price_message(results: dict, cfg: dict) -> str:
+def build_price_message(results: dict, cfg: dict):
     raw = results.get("raw", {})
     itineraries = _extract_itineraries(raw)
 
@@ -373,22 +372,23 @@ def format_price_message(results: dict, cfg: dict) -> str:
 
     header = (
         f"✈️ {route}\n"
-        f"📅 {trip_type} | {dates}\n"
-        f"👥 {cfg['passengers']} yolcu | 🧭 {pref_label}\n"
-        f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        f"{'─' * 22}\n"
+        f"📅 {trip_type} • {dates}\n"
+        f"👥 {cfg['passengers']} yolcu • {pref_label}\n"
+        f"🕒 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        f"────────────────────"
     )
 
     if not itineraries:
-        return header + "❌ Tercihinize uygun uçuş sonucu bulunamadı."
+        return {
+            "text": header + "\n\n❌ Tercihinize uygun uçuş bulunamadı.",
+            "top_booking_url": None,
+        }
 
     top = itineraries[0]
     top_price = _format_price(top.get("price"))
     top_legs = top.get("legs", [])
 
-    lines = [header]
-    lines.append("⭐ En Uygun Seçenek")
-    lines.append(f"💸 {top_price}")
+    lines = [header, "", "⭐ En uygun seçenek", f"💸 {top_price}"]
 
     if len(top_legs) > 0:
         lines.append(f"🛫 {_extract_carrier(top_legs[0])}")
@@ -398,22 +398,16 @@ def format_price_message(results: dict, cfg: dict) -> str:
         lines.append(f"🛬 {_extract_carrier(top_legs[1])}")
         lines.append(_format_leg_line(top_legs[1]))
 
-    booking_url = top.get("bookingUrl")
-    if booking_url:
-        short_link = booking_url[:120] + "..." if len(booking_url) > 120 else booking_url
-        lines.append(f"🔗 {short_link}")
-
     if len(itineraries) > 1:
         lines.append("")
-        lines.append("Diğer Seçenekler")
+        lines.append("Diğer seçenekler")
+
         for idx, item in enumerate(itineraries[1:3], start=2):
             price = _format_price(item.get("price"))
             legs = item.get("legs", [])
-
             carrier = _extract_carrier(legs[0]) if len(legs) > 0 else "Havayolu bilgisi yok"
             leg_line = _format_leg_line(legs[0]) if len(legs) > 0 else "-"
-
-            lines.append(f"{idx}. {price} | {carrier}")
+            lines.append(f"{idx}. {price} • {carrier}")
             lines.append(f"   {leg_line}")
 
     message = "\n".join(lines).strip()
@@ -421,4 +415,7 @@ def format_price_message(results: dict, cfg: dict) -> str:
     if len(message) > 3500:
         message = message[:3400] + "\n\n...devamı kesildi."
 
-    return message
+    return {
+        "text": message,
+        "top_booking_url": top.get("bookingUrl"),
+    }
