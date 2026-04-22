@@ -184,6 +184,86 @@ def _extract_price(item: dict):
     return "Fiyat yok"
 
 
+def _format_price(price_value):
+    if not price_value:
+        return "Fiyat yok"
+
+    text = str(price_value).replace("TRY", "").strip()
+
+    try:
+        amount = float(text)
+        formatted = f"{amount:,.0f}".replace(",", ".")
+        return f"{formatted} TL"
+    except ValueError:
+        return str(price_value)
+
+
+def _format_dt(dt_str):
+    if not dt_str or dt_str == "-":
+        return "-"
+
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(dt_str, fmt)
+            return dt.strftime("%d.%m %H:%M")
+        except ValueError:
+            pass
+
+    return dt_str
+
+
+def _extract_carrier(leg):
+    if not isinstance(leg, dict):
+        return "Havayolu bilgisi yok"
+
+    for key in [
+        "carrier",
+        "marketingCarrier",
+        "operatingCarrier",
+        "airline",
+        "name",
+    ]:
+        value = leg.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+        if isinstance(value, dict):
+            for nested_key in ["name", "displayName", "carrierName"]:
+                nested_val = value.get(nested_key)
+                if isinstance(nested_val, str) and nested_val.strip():
+                    return nested_val
+
+    carriers = leg.get("carriers")
+    if isinstance(carriers, list) and carriers:
+        first = carriers[0]
+        if isinstance(first, dict):
+            for key in ["name", "displayName", "carrierName"]:
+                val = first.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val
+
+    return "Havayolu bilgisi yok"
+
+
+def _extract_booking_link(raw, item):
+    candidate_paths = [
+        item.get("deeplink"),
+        item.get("deepLink"),
+        item.get("bookingUrl"),
+        item.get("url"),
+        raw.get("deeplink") if isinstance(raw, dict) else None,
+        raw.get("deepLink") if isinstance(raw, dict) else None,
+        raw.get("bookingUrl") if isinstance(raw, dict) else None,
+        raw.get("url") if isinstance(raw, dict) else None,
+    ]
+
+    for link in candidate_paths:
+        if isinstance(link, str) and link.startswith("http"):
+            return link
+
+    return None
+
+
 def format_price_message(results: dict, cfg: dict) -> str:
     raw = results.get("raw", {})
     itineraries = _extract_itineraries(raw)
@@ -207,25 +287,56 @@ def format_price_message(results: dict, cfg: dict) -> str:
     lines = [header]
 
     for idx, item in enumerate(itineraries[:5], start=1):
-        price = _extract_price(item)
-        lines.append(f"{idx}. 💸 *{price}*")
+        price_raw = _extract_price(item)
+        price = _format_price(price_raw)
 
-        outbound = item.get("outbound") or item.get("legs", [{}])[0]
+        legs = item.get("legs", [])
+        outbound = item.get("outbound")
         inbound = item.get("inbound")
 
+        if not outbound and isinstance(legs, list) and len(legs) > 0:
+            outbound = legs[0]
+
+        if not inbound and isinstance(legs, list) and len(legs) > 1:
+            inbound = legs[1]
+
+        lines.append(f"{idx}. 💸 *{price}*")
+
         if isinstance(outbound, dict):
-            dep = outbound.get("departure") or outbound.get("departureDateTime") or "-"
-            arr = outbound.get("arrival") or outbound.get("arrivalDateTime") or "-"
-            carrier = outbound.get("carrier") or outbound.get("marketingCarrier") or "Havayolu bilgisi yok"
+            dep = _format_dt(
+                outbound.get("departure")
+                or outbound.get("departureDateTime")
+                or outbound.get("originDeparture")
+            )
+            arr = _format_dt(
+                outbound.get("arrival")
+                or outbound.get("arrivalDateTime")
+                or outbound.get("destinationArrival")
+            )
+            carrier = _extract_carrier(outbound)
+
             lines.append(f"   🛫 {carrier}")
             lines.append(f"   {dep} → {arr}")
 
         if isinstance(inbound, dict):
-            dep = inbound.get("departure") or inbound.get("departureDateTime") or "-"
-            arr = inbound.get("arrival") or inbound.get("arrivalDateTime") or "-"
-            carrier = inbound.get("carrier") or inbound.get("marketingCarrier") or "Havayolu bilgisi yok"
+            dep = _format_dt(
+                inbound.get("departure")
+                or inbound.get("departureDateTime")
+                or inbound.get("originDeparture")
+            )
+            arr = _format_dt(
+                inbound.get("arrival")
+                or inbound.get("arrivalDateTime")
+                or inbound.get("destinationArrival")
+            )
+            carrier = _extract_carrier(inbound)
+
             lines.append(f"   🛬 {carrier}")
             lines.append(f"   {dep} → {arr}")
+
+        booking_link = _extract_booking_link(raw, item)
+        if booking_link:
+            lines.append(f"   🔗 {booking_link}")
 
         lines.append("")
 
