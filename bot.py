@@ -354,7 +354,7 @@ def main():
 
     app.job_queue.run_repeating(
         scheduled_check,
-        interval=3600,
+        interval=10800,
         first=10,
         name="hourly_price_check"
     )
