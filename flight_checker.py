@@ -384,7 +384,7 @@ def format_price_message(results: dict, cfg: dict) -> str:
 
     lines = [header]
 
-    for idx, item in enumerate(itineraries[:5], start=1):
+    for idx, item in enumerate(itineraries[:3], start=1):
         price = _format_price(item.get("price"))
         lines.append(f"{idx}. 💸 {price}")
 
@@ -395,9 +395,15 @@ def format_price_message(results: dict, cfg: dict) -> str:
             lines.extend(_format_leg("🛬", legs[1]))
 
         booking_url = item.get("bookingUrl")
-        if booking_url:
-            lines.append(f"   🔗 Bilet linki: {booking_url}")
+        if idx == 1 and booking_url:
+            short_link = booking_url[:180] + "..." if len(booking_url) > 180 else booking_url
+            lines.append(f"   🔗 Bilet linki: {short_link}")
 
         lines.append("")
 
-    return "\n".join(lines).strip()
+    message = "\n".join(lines).strip()
+
+    if len(message) > 3500:
+        message = message[:3400] + "\n\n...devamı kesildi."
+
+    return message
