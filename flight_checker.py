@@ -275,7 +275,7 @@ def format_price_message(results: dict, cfg: dict) -> str:
         dates += f" / {cfg['return_date']}"
 
     header = (
-        f"✈️ *{route}*\n"
+        f"✈️ {route}\n"
         f"{trip_type} | 📅 {dates} | 👥 {cfg['passengers']} yolcu\n"
         f"🕐 Kontrol: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
         f"{'─' * 24}\n"
@@ -300,7 +300,7 @@ def format_price_message(results: dict, cfg: dict) -> str:
         if not inbound and isinstance(legs, list) and len(legs) > 1:
             inbound = legs[1]
 
-        lines.append(f"{idx}. 💸 *{price}*")
+        lines.append(f"{idx}. 💸 {price}")
 
         if isinstance(outbound, dict):
             dep = _format_dt(
