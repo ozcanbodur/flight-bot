@@ -34,7 +34,12 @@ async def _request_json(session: aiohttp.ClientSession, path: str, params: dict)
 
     for attempt in range(MAX_RETRIES):
         try:
-            async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=35)) as resp:
+            async with session.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=35)
+            ) as resp:
                 text = await resp.text()
 
                 if resp.status == 200:
@@ -75,6 +80,63 @@ async def _request_json(session: aiohttp.ClientSession, path: str, params: dict)
     raise Exception("Bilinmeyen API hatası")
 
 
+def _extract_candidates(data):
+    if isinstance(data, dict):
+        for key in ["data", "results", "airports", "places"]:
+            if isinstance(data.get(key), list):
+                return data[key]
+    elif isinstance(data, list):
+        return data
+    return []
+
+
+def _candidate_sky_id(item):
+    return (
+        item.get("skyId")
+        or item.get("navigation", {}).get("relevantFlightParams", {}).get("skyId")
+        or item.get("presentation", {}).get("skyId")
+        or ""
+    )
+
+
+def _candidate_entity_id(item):
+    return (
+        item.get("entityId")
+        or item.get("navigation", {}).get("relevantFlightParams", {}).get("entityId")
+        or item.get("presentation", {}).get("entityId")
+        or ""
+    )
+
+
+def _candidate_name(item):
+    return (
+        item.get("presentation", {}).get("title")
+        or item.get("name")
+        or item.get("title")
+        or ""
+    )
+
+
+def _score_candidate(item, query_upper):
+    sky_id = str(_candidate_sky_id(item)).upper()
+    name = str(_candidate_name(item)).upper()
+
+    score = 0
+
+    if sky_id == query_upper:
+        score += 100
+    if sky_id.startswith(query_upper):
+        score += 50
+    if query_upper == name:
+        score += 40
+    if query_upper in name:
+        score += 20
+    if "AIRPORT" in name:
+        score += 5
+
+    return score
+
+
 async def search_airport(session: aiohttp.ClientSession, query: str):
     data = await _request_json(
         session,
@@ -86,42 +148,25 @@ async def search_airport(session: aiohttp.ClientSession, query: str):
         },
     )
 
-    candidates = []
-
-    if isinstance(data, dict):
-        for key in ["data", "results", "airports", "places"]:
-            if isinstance(data.get(key), list):
-                candidates = data[key]
-                break
-    elif isinstance(data, list):
-        candidates = data
+    candidates = _extract_candidates(data)
 
     if not candidates:
         raise Exception(f"Havalimanı bulunamadı: {query}")
 
-    best = candidates[0]
+    query_upper = query.strip().upper()
+    best = sorted(candidates, key=lambda item: _score_candidate(item, query_upper), reverse=True)[0]
 
-    sky_id = (
-        best.get("skyId")
-        or best.get("navigation", {}).get("relevantFlightParams", {}).get("skyId")
-        or best.get("presentation", {}).get("skyId")
-    )
-
-    entity_id = (
-        best.get("entityId")
-        or best.get("navigation", {}).get("relevantFlightParams", {}).get("entityId")
-        or best.get("presentation", {}).get("entityId")
-    )
-
-    name = (
-        best.get("presentation", {}).get("title")
-        or best.get("name")
-        or best.get("title")
-        or query
-    )
+    sky_id = _candidate_sky_id(best)
+    entity_id = _candidate_entity_id(best)
+    name = _candidate_name(best) or query
 
     if not sky_id or not entity_id:
         raise Exception(f"{query} için skyId/entityId alınamadı. API yanıtını kontrol et.")
+
+    logger.info(
+        "Airport match for %s -> name=%s skyId=%s entityId=%s",
+        query, name, sky_id, entity_id
+    )
 
     return {
         "name": name,
@@ -130,8 +175,39 @@ async def search_airport(session: aiohttp.ClientSession, query: str):
     }
 
 
+def _filter_itineraries_by_stops(itineraries, stop_preference):
+    if stop_preference == "any":
+        return itineraries
+
+    filtered = []
+    for item in itineraries:
+        legs = item.get("legs", [])
+        if not isinstance(legs, list) or not legs:
+            continue
+
+        leg_stop_counts = []
+        for leg in legs:
+            stop_count = leg.get("stopCount")
+            if isinstance(stop_count, int):
+                leg_stop_counts.append(stop_count)
+
+        if not leg_stop_counts:
+            continue
+
+        if stop_preference == "nonstop":
+            if all(sc == 0 for sc in leg_stop_counts):
+                filtered.append(item)
+
+        elif stop_preference == "with_stops":
+            if any(sc > 0 for sc in leg_stop_counts):
+                filtered.append(item)
+
+    return filtered
+
+
 async def search_flights(origin: str, destination: str, depart_date: str,
-                         return_date: str = None, passengers: int = 1):
+                         return_date: str = None, passengers: int = 1,
+                         stop_preference: str = "any"):
     if not RAPIDAPI_KEY:
         raise Exception("RAPIDAPI_KEY environment variable eksik.")
 
@@ -162,8 +238,14 @@ async def search_flights(origin: str, destination: str, depart_date: str,
 
         data = await _request_json(session, "/flights/searchFlights", params)
 
+        itineraries = data.get("itineraries", [])
+        if isinstance(itineraries, list):
+            filtered = _filter_itineraries_by_stops(itineraries, stop_preference)
+            data["itineraries"] = filtered
+
         logger.info("Flight search status: %s", data.get("status"))
-        logger.info("Flight search total: %s", data.get("total"))
+        logger.info("Flight search total before filter: %s", data.get("total"))
+        logger.info("Flight search total after filter: %s", len(data.get("itineraries", [])))
 
         return {
             "raw": data,
@@ -172,6 +254,7 @@ async def search_flights(origin: str, destination: str, depart_date: str,
             "depart_date": depart_date_api,
             "return_date": return_date_api,
             "passengers": passengers,
+            "stop_preference": stop_preference,
         }
 
 
@@ -276,9 +359,17 @@ def format_price_message(results: dict, cfg: dict) -> str:
     if cfg.get("return_date"):
         dates += f" / {cfg['return_date']}"
 
+    pref_map = {
+        "any": "Fark etmez",
+        "nonstop": "Aktarmasız",
+        "with_stops": "Aktarmalı",
+    }
+    pref_label = pref_map.get(cfg.get("stop_preference", "any"), "Fark etmez")
+
     header = (
         f"✈️ {route}\n"
         f"{trip_type} | 📅 {dates} | 👥 {cfg['passengers']} yolcu\n"
+        f"🧭 Tercih: {pref_label}\n"
         f"🕐 Kontrol: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
         f"{'─' * 24}\n"
     )
@@ -289,7 +380,7 @@ def format_price_message(results: dict, cfg: dict) -> str:
         extra = f"\nDurum: {status}" if status else ""
         if total is not None:
             extra += f"\nToplam sonuç: {total}"
-        return header + "\n❌ Uygun uçuş sonucu bulunamadı." + extra
+        return header + "\n❌ Tercihinize uygun uçuş sonucu bulunamadı." + extra
 
     lines = [header]
 
