@@ -21,36 +21,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Conversation states
 ORIGIN, DESTINATION, DEPART_DATE, RETURN_DATE, PASSENGERS, CONFIRM = range(6)
 
-# Aktif takipler chat bazlı tutulur
-# private chat ise kullanıcıya gider
-# grup ise gruba gider
 active_watches = {}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "✈️ *Uçuş Fiyat Takip Botuna Hoş Geldiniz!*\n\n"
+        "✈️ Uçuş Fiyat Takip Botuna hoş geldiniz.\n\n"
         "Seçtiğiniz rota için her saat başı fiyat kontrolü yaparım.\n\n"
-        "📌 Komutlar:\n"
-        "/watch — Yeni rota takibi başlat\n"
-        "/list — Aktif takibi göster\n"
-        "/check — Şimdi fiyat kontrol et\n"
-        "/stop — Takibi durdur\n"
-        "/cancel — Mevcut işlemi iptal et\n\n"
+        "Komutlar:\n"
+        "/watch - Yeni rota takibi başlat\n"
+        "/list - Aktif takibi göster\n"
+        "/check - Şimdi fiyat kontrol et\n"
+        "/stop - Takibi durdur\n"
+        "/cancel - Mevcut işlemi iptal et\n\n"
         "Grup içinde de kullanılabilir. Takip hangi sohbette başlatıldıysa mesajlar oraya gider."
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
 
 async def watch_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
-        "🛫 *Kalkış havalimanı veya şehir bilgisini girin*\n"
-        "_Örnek: IST, SAW, SJJ, London_",
-        parse_mode="Markdown"
+        "🛫 Kalkış havalimanı veya şehir bilgisini girin\n"
+        "Örnek: IST, SAW, SJJ, London"
     )
     return ORIGIN
 
@@ -58,9 +53,8 @@ async def watch_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["origin"] = update.message.text.strip().upper()
     await update.message.reply_text(
-        "🛬 *Varış havalimanı veya şehir bilgisini girin*\n"
-        "_Örnek: SJJ, LHR, CDG_",
-        parse_mode="Markdown"
+        "🛬 Varış havalimanı veya şehir bilgisini girin\n"
+        "Örnek: SJJ, LHR, CDG"
     )
     return DESTINATION
 
@@ -68,9 +62,8 @@ async def get_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["destination"] = update.message.text.strip().upper()
     await update.message.reply_text(
-        "📅 *Gidiş tarihini girin*\n"
-        "_Format: GG.AA.YYYY — Örnek: 01.05.2026_",
-        parse_mode="Markdown"
+        "📅 Gidiş tarihini girin\n"
+        "Format: GG.AA.YYYY - Örnek: 01.05.2026"
     )
     return DEPART_DATE
 
@@ -87,9 +80,8 @@ async def get_depart_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]]
 
         await update.message.reply_text(
-            "🔄 *Gidiş-dönüş bilet mi arıyorsunuz?*",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            "🔄 Gidiş-dönüş bilet mi arıyorsunuz?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return RETURN_DATE
     except ValueError:
@@ -106,14 +98,13 @@ async def get_return_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "oneway":
         context.user_data["return_date"] = None
         context.user_data["awaiting_return"] = False
-        await query.edit_message_text("👥 *Kaç yolcu? (1-9)*", parse_mode="Markdown")
+        await query.edit_message_text("👥 Kaç yolcu? (1-9)")
         return PASSENGERS
 
     context.user_data["awaiting_return"] = True
     await query.edit_message_text(
-        "📅 *Dönüş tarihini girin*\n"
-        "_Format: GG.AA.YYYY_",
-        parse_mode="Markdown"
+        "📅 Dönüş tarihini girin\n"
+        "Format: GG.AA.YYYY"
     )
     return RETURN_DATE
 
@@ -129,7 +120,7 @@ async def get_return_date_text(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data["return_date"] = date_str
         context.user_data["awaiting_return"] = False
 
-        await update.message.reply_text("👥 *Kaç yolcu? (1-9)*", parse_mode="Markdown")
+        await update.message.reply_text("👥 Kaç yolcu? (1-9)")
         return PASSENGERS
     except ValueError:
         await update.message.reply_text("❌ Geçersiz format. GG.AA.YYYY şeklinde girin.")
@@ -148,12 +139,12 @@ async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ret = cfg.get("return_date") or "Yok (tek yön)"
 
         summary = (
-            f"📋 *Takip Özeti*\n\n"
-            f"🛫 Kalkış: `{cfg['origin']}`\n"
-            f"🛬 Varış: `{cfg['destination']}`\n"
-            f"📅 Gidiş: `{cfg['depart_date']}`\n"
-            f"📅 Dönüş: `{ret}`\n"
-            f"👥 Yolcu: `{n}`\n\n"
+            f"📋 Takip Özeti\n\n"
+            f"🛫 Kalkış: {cfg['origin']}\n"
+            f"🛬 Varış: {cfg['destination']}\n"
+            f"📅 Gidiş: {cfg['depart_date']}\n"
+            f"📅 Dönüş: {ret}\n"
+            f"👥 Yolcu: {n}\n\n"
             f"Her saat başı fiyat kontrol edilecek. Onaylıyor musunuz?"
         )
 
@@ -164,8 +155,7 @@ async def get_passengers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             summary,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CONFIRM
     except ValueError:
@@ -191,10 +181,9 @@ async def confirm_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active_watches[chat_id] = cfg
 
         await query.edit_message_text(
-            f"✅ *Takip başlatıldı!*\n\n"
-            f"`{cfg['origin']} → {cfg['destination']}` rotası her saat başı kontrol edilecek.\n"
-            f"İlk kontrol şimdi yapılıyor...",
-            parse_mode="Markdown"
+            f"✅ Takip başlatıldı.\n\n"
+            f"{cfg['origin']} → {cfg['destination']} rotası her saat başı kontrol edilecek.\n"
+            f"İlk kontrol şimdi yapılıyor..."
         )
 
         await do_price_check(context.application, chat_id, cfg)
@@ -218,12 +207,11 @@ async def list_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ret = cfg.get("return_date") or "Tek yön"
 
     await update.message.reply_text(
-        f"📡 *Aktif Takip*\n\n"
-        f"🛫 `{cfg['origin']} → {cfg['destination']}`\n"
-        f"📅 Gidiş: `{cfg['depart_date']}`\n"
-        f"📅 Dönüş: `{ret}`\n"
-        f"👥 Yolcu: `{cfg['passengers']}`",
-        parse_mode="Markdown"
+        f"📡 Aktif Takip\n\n"
+        f"🛫 {cfg['origin']} → {cfg['destination']}\n"
+        f"📅 Gidiş: {cfg['depart_date']}\n"
+        f"📅 Dönüş: {ret}\n"
+        f"👥 Yolcu: {cfg['passengers']}"
     )
 
 
@@ -259,7 +247,7 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
         )
 
         msg = format_price_message(results, cfg)
-        await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        await app.bot.send_message(chat_id=chat_id, text=msg)
 
     except Exception as e:
         error_text = str(e)
@@ -281,14 +269,13 @@ async def do_price_check(app: Application, chat_id: int, cfg: dict):
             )
         else:
             friendly_message = (
-                f"⚠️ Fiyat kontrolü sırasında hata oluştu:\n`{error_text}`"
+                f"⚠️ Fiyat kontrolü sırasında hata oluştu:\n{error_text}"
             )
 
         logger.exception("Price check error")
         await app.bot.send_message(
             chat_id=chat_id,
-            text=friendly_message,
-            parse_mode="Markdown"
+            text=friendly_message
         )
 
 
