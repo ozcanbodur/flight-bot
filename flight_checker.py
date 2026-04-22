@@ -122,13 +122,10 @@ async def search_flights(origin: str, destination: str, depart_date: str,
         if return_date_api:
             params["returnDate"] = return_date_api
 
-        data = await _request_json(
-            session,
-            "/flights/searchFlights",
-            params
-        )
-        logger.info("Flight search raw response keys: %s", list(data.keys()) if isinstance(data, dict) else type(data))
-        logger.info("Flight search raw response preview: %s", str(data)[:2000])
+        data = await _request_json(session, "/flights/searchFlights", params)
+
+        logger.info("Flight search status: %s", data.get("status"))
+        logger.info("Flight search total: %s", data.get("total"))
 
         return {
             "raw": data,
@@ -143,127 +140,78 @@ async def search_flights(origin: str, destination: str, depart_date: str,
 def _extract_itineraries(raw: dict):
     if not isinstance(raw, dict):
         return []
-
-    for key in ["data", "itineraries", "results"]:
-        value = raw.get(key)
-        if isinstance(value, list):
-            return value
-
-    data = raw.get("data")
-    if isinstance(data, dict):
-        for key in ["itineraries", "results"]:
-            value = data.get(key)
-            if isinstance(value, list):
-                return value
-
-    return []
+    itineraries = raw.get("itineraries")
+    return itineraries if isinstance(itineraries, list) else []
 
 
-def _extract_price(item: dict):
-    price = item.get("price") or item.get("pricingOptions") or item.get("cheapestPrice")
-
-    if isinstance(price, dict):
-        return (
-            price.get("formatted")
-            or price.get("displayAmount")
-            or str(price.get("amount"))
-            or "Fiyat yok"
-        )
-
-    if isinstance(price, list) and price:
-        first = price[0]
-        if isinstance(first, dict):
-            return (
-                first.get("formattedPrice")
-                or first.get("price", {}).get("formatted")
-                or str(first.get("amount"))
-                or "Fiyat yok"
-            )
-
-    if isinstance(price, str):
-        return price
-
+def _format_price(price_obj):
+    if isinstance(price_obj, dict):
+        formatted = price_obj.get("formatted")
+        if formatted:
+            return formatted.replace("TRY ", "").replace(" USD ", " ").replace("USD ", "$")
+        amount = price_obj.get("amount")
+        currency = price_obj.get("currency", "")
+        if amount is not None:
+            if currency == "TRY":
+                return f"{float(amount):,.0f}".replace(",", ".") + " TL"
+            return f"{currency} {amount}"
     return "Fiyat yok"
 
 
-def _format_price(price_value):
-    if not price_value:
-        return "Fiyat yok"
-
-    text = str(price_value).replace("TRY", "").strip()
-
-    try:
-        amount = float(text)
-        formatted = f"{amount:,.0f}".replace(",", ".")
-        return f"{formatted} TL"
-    except ValueError:
-        return str(price_value)
-
-
 def _format_dt(dt_str):
-    if not dt_str or dt_str == "-":
+    if not dt_str:
         return "-"
+    try:
+        dt = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%S")
+        return dt.strftime("%d.%m %H:%M")
+    except ValueError:
+        return dt_str
 
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-        try:
-            dt = datetime.strptime(dt_str, fmt)
-            return dt.strftime("%d.%m %H:%M")
-        except ValueError:
-            pass
 
-    return dt_str
+def _format_duration(minutes):
+    if not isinstance(minutes, int):
+        return ""
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours and mins:
+        return f"{hours}s {mins}dk"
+    if hours:
+        return f"{hours}s"
+    return f"{mins}dk"
 
 
 def _extract_carrier(leg):
-    if not isinstance(leg, dict):
-        return "Havayolu bilgisi yok"
-
-    for key in [
-        "carrier",
-        "marketingCarrier",
-        "operatingCarrier",
-        "airline",
-        "name",
-    ]:
-        value = leg.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-
-        if isinstance(value, dict):
-            for nested_key in ["name", "displayName", "carrierName"]:
-                nested_val = value.get(nested_key)
-                if isinstance(nested_val, str) and nested_val.strip():
-                    return nested_val
-
     carriers = leg.get("carriers")
     if isinstance(carriers, list) and carriers:
         first = carriers[0]
         if isinstance(first, dict):
-            for key in ["name", "displayName", "carrierName"]:
-                val = first.get(key)
-                if isinstance(val, str) and val.strip():
-                    return val
-
+            name = first.get("name")
+            if name:
+                return name
     return "Havayolu bilgisi yok"
 
 
-def _extract_booking_link(raw, item):
-    candidate_paths = [
-        item.get("deeplink"),
-        item.get("deepLink"),
-        item.get("bookingUrl"),
-        item.get("url"),
-        raw.get("deeplink") if isinstance(raw, dict) else None,
-        raw.get("deepLink") if isinstance(raw, dict) else None,
-        raw.get("bookingUrl") if isinstance(raw, dict) else None,
-        raw.get("url") if isinstance(raw, dict) else None,
+def _format_leg(prefix, leg):
+    if not isinstance(leg, dict):
+        return []
+
+    carrier = _extract_carrier(leg)
+    dep = _format_dt(leg.get("departure"))
+    arr = _format_dt(leg.get("arrival"))
+    duration = _format_duration(leg.get("durationMinutes"))
+    stop_count = leg.get("stopCount")
+
+    if stop_count == 0:
+        stop_text = "Aktarmasız"
+    elif isinstance(stop_count, int):
+        stop_text = f"{stop_count} aktarma"
+    else:
+        stop_text = "Aktarma bilgisi yok"
+
+    return [
+        f"   {prefix} {carrier}",
+        f"   {dep} → {arr} | {duration} | {stop_text}"
     ]
-
-    for link in candidate_paths:
-        if isinstance(link, str) and link.startswith("http"):
-            return link
-
-    return None
 
 
 def format_price_message(results: dict, cfg: dict) -> str:
@@ -284,61 +232,28 @@ def format_price_message(results: dict, cfg: dict) -> str:
     )
 
     if not itineraries:
-        return header + "\n❌ Uygun uçuş sonucu bulunamadı."
+        status = raw.get("status", "")
+        total = raw.get("total")
+        extra = f"\nDurum: {status}" if status else ""
+        if total is not None:
+            extra += f"\nToplam sonuç: {total}"
+        return header + "\n❌ Uygun uçuş sonucu bulunamadı." + extra
 
     lines = [header]
 
     for idx, item in enumerate(itineraries[:5], start=1):
-        price_raw = _extract_price(item)
-        price = _format_price(price_raw)
-
-        legs = item.get("legs", [])
-        outbound = item.get("outbound")
-        inbound = item.get("inbound")
-
-        if not outbound and isinstance(legs, list) and len(legs) > 0:
-            outbound = legs[0]
-
-        if not inbound and isinstance(legs, list) and len(legs) > 1:
-            inbound = legs[1]
-
+        price = _format_price(item.get("price"))
         lines.append(f"{idx}. 💸 {price}")
 
-        if isinstance(outbound, dict):
-            dep = _format_dt(
-                outbound.get("departure")
-                or outbound.get("departureDateTime")
-                or outbound.get("originDeparture")
-            )
-            arr = _format_dt(
-                outbound.get("arrival")
-                or outbound.get("arrivalDateTime")
-                or outbound.get("destinationArrival")
-            )
-            carrier = _extract_carrier(outbound)
+        legs = item.get("legs", [])
+        if isinstance(legs, list) and len(legs) > 0:
+            lines.extend(_format_leg("🛫", legs[0]))
+        if isinstance(legs, list) and len(legs) > 1:
+            lines.extend(_format_leg("🛬", legs[1]))
 
-            lines.append(f"   🛫 {carrier}")
-            lines.append(f"   {dep} → {arr}")
-
-        if isinstance(inbound, dict):
-            dep = _format_dt(
-                inbound.get("departure")
-                or inbound.get("departureDateTime")
-                or inbound.get("originDeparture")
-            )
-            arr = _format_dt(
-                inbound.get("arrival")
-                or inbound.get("arrivalDateTime")
-                or inbound.get("destinationArrival")
-            )
-            carrier = _extract_carrier(inbound)
-
-            lines.append(f"   🛬 {carrier}")
-            lines.append(f"   {dep} → {arr}")
-
-        booking_link = _extract_booking_link(raw, item)
-        if booking_link:
-            lines.append(f"   🔗 {booking_link}")
+        booking_url = item.get("bookingUrl")
+        if booking_url:
+            lines.append(f"   🔗 Bilet linki: {booking_url}")
 
         lines.append("")
 
